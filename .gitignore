@@ -1,0 +1,44 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.key
+
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local uploads and persistent vector database (keep the folder placeholder)
+data/*
+!data/.gitkeep
+
+# Generated evaluation reports; sample dataset/docs remain tracked
+evaluation/results/
+
+# Logs and local database files
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Local patch copies
+knowledgepilot-phase2-patch/
+
+# Evaluation Python cache
+evaluation/__pycache__/

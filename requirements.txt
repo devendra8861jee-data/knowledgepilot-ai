@@ -1,0 +1,15 @@
+# KnowledgePilot AI - runtime dependencies
+# Versions below are the ones the project was tested with (Python 3.13 on Linux).
+# Python 3.11 or 3.12 is recommended on Windows.
+streamlit>=1.50,<2
+pymupdf>=1.24.3,<2
+chromadb>=1.0,<2
+langchain-text-splitters>=0.3,<2
+sentence-transformers>=3.0,<6
+openai>=1.40
+python-dotenv>=1.0,<2
+numpy>=1.26
+pandas>=2.1
+
+# Official MCP Python SDK v2 (Python 3.11+)
+mcp>=2.3,<3
