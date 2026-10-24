@@ -279,9 +279,9 @@ function Evaluation({ evaluation }) {
   const report = evaluation?.report;
   const summary = report?.summary;
   const gt = summary?.ground_truth_retrieval_metrics || {};
-  const abst = summary?.abstention_metrics || summary?.abstention || {};
+  const abst = summary?.abstention_behaviour || summary?.abstention_metrics || summary?.abstention || {};
   const op = summary?.operational_metrics || {};
-  const rows = report?.per_question || report?.results || [];
+  const rows = report?.items || report?.per_question || report?.results || [];
   return <div className="evaluation-page">
     <PageHeading eyebrow="QUALITY & PERFORMANCE" title="Evaluation center" description="Track retrieval quality, abstention behaviour, and operational performance against your labelled test set." action={<a className="btn btn-secondary" href="https://github.com/devendra8861jee-data/knowledgepilot-ai" target="_blank" rel="noreferrer"><Github size={16} /> Repository</a>} />
     {!evaluation?.available ? <div className="panel eval-empty"><div className="empty-icon"><Gauge size={24} /></div><h3>No evaluation report yet</h3><p>{evaluation?.message || "Run the labelled dataset from your existing evaluation workflow to populate this dashboard."}</p></div> : <>
@@ -296,11 +296,22 @@ function Evaluation({ evaluation }) {
       </div>
       <div className="section-title-row eval-section-title"><div><h2>Reliability & latency</h2><p>Measure when the system answers, abstains, and how long retrieval takes.</p></div></div>
       <div className="overview-grid eval-secondary-grid">
-        <section className="panel eval-detail-panel"><div className="panel-header"><div><h3>Abstention behaviour</h3><p>Questions with insufficient evidence</p></div><ShieldCheck size={18} className="green-text" /></div><div className="detail-stat"><span>Correct abstention</span><b>{metric(abst, ["correct_abstention_rate", "correct_abstention"])}</b></div><div className="detail-stat"><span>False abstention</span><b>{metric(abst, ["false_abstention_rate", "false_abstention"])}</b></div><div className="detail-stat"><span>Keyword coverage</span><b>{metric(summary?.lexical_metrics || summary, ["keyword_coverage", "keyword_coverage_in_context"])}</b></div></section>
+        <section className="panel eval-detail-panel"><div className="panel-header"><div><h3>Abstention behaviour</h3><p>Questions with insufficient evidence</p></div><ShieldCheck size={18} className="green-text" /></div><div className="detail-stat"><span>Correct abstention</span><b>{metric(abst, ["correct_abstention_rate_unanswerable", "correct_abstention_rate", "correct_abstention"])}</b></div><div className="detail-stat"><span>False abstention</span><b>{metric(abst, ["false_abstention_rate_answerable", "false_abstention_rate", "false_abstention"])}</b></div><div className="detail-stat"><span>Keyword coverage</span><b>{metric(summary?.proxy_metrics || summary?.lexical_metrics || summary, ["context_keyword_coverage", "keyword_coverage", "keyword_coverage_in_context"])}</b></div></section>
         <section className="panel eval-detail-panel"><div className="panel-header"><div><h3>Operational metrics</h3><p>Latency and reliability</p></div><Clock3 size={18} className="blue-text" /></div><div className="detail-stat"><span>Mean latency</span><b>{seconds(op, ["mean_latency_s", "mean_latency"])}</b></div><div className="detail-stat"><span>P95 latency</span><b>{seconds(op, ["p95_latency_s", "p95_latency"])}</b></div><div className="detail-stat"><span>Error rate</span><b>{metric(op, ["error_rate"])}</b></div></section>
       </div>
       <section className="panel judge-panel"><div className="judge-icon"><Sparkles size={17} /></div><div><h3>LLM-judged quality metrics</h3><p>Faithfulness, answer relevance, and context relevance require an LLM judge to be configured and measured. They are not inferred by this UI.</p></div><span className="na-pill">Not measured</span></section>
       <section className="panel human-review"><div className="panel-header"><div><h3>Human review checklist</h3><p>Recommended before treating this run as production-ready.</p></div><span className="review-pill">Manual review</span></div><div className="review-list"><div><span>01</span> Compare generated answers against expected answers.</div><div><span>02</span> Check that each citation excerpt supports its claim.</div><div><span>03</span> Inspect false abstentions and unsupported-question cases.</div></div></section>
+      <section className="panel question-results"><div className="panel-header"><div><h3>Per-question results</h3><p>${rows.length} labelled questions from the latest evaluation.</p></div><span className="count-pill">${rows.length}</span></div>
+        <div className="question-table"><div className="question-table-head"><span>QUESTION</span><span>TYPE</span><span>RESULT</span><span>TOP SCORE</span><span>LATENCY</span></div>
+          {rows.map((row, index) => <div className="question-table-row" key={row.id || index}>
+            <div className="question-cell"><b>{row.id || `Q${String(index + 1).padStart(2, "0")}`}</b><span>{row.question}</span>{row.answer && <details><summary>View answer and expected answer</summary><p><strong>System:</strong> {row.answer}</p><p><strong>Expected:</strong> {row.expected_answer || "Not included in report"}</p></details>}</div>
+            <div><span className={`question-type ${row.answerable ? "type-answerable" : "type-unknown"}`}>{row.answerable ? "Answerable" : "Unanswerable"}</span></div>
+            <div><span className={`question-result ${row.abstained ? (row.answerable ? "result-warn" : "result-good") : (row.answerable ? "result-good" : "result-warn")}`}>{row.abstained ? "Abstained" : "Answered"}</span></div>
+            <div className="score-cell">{row.retrieved?.[0]?.score != null ? Number(row.retrieved[0].score).toFixed(3) : "—"}</div>
+            <div className="score-cell">{row.total_latency_s != null ? fmtTime(row.total_latency_s) : "—"}</div>
+          </div>)}
+        </div>
+      </section>
     </>}
   </div>;
 }
