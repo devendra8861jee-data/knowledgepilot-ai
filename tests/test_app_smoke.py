@@ -27,6 +27,8 @@ def test_app_starts_without_errors_and_shows_empty_state(offline_env):
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception
     assert at.title[0].value == "KnowledgePilot AI"
+    at.radio[0].set_value("Documents").run()
+    assert not at.exception
     assert any("No documents indexed yet" in i.value for i in at.info)
 
 
@@ -36,6 +38,8 @@ def test_chat_returns_cited_passages_and_fallback(offline_env, pdf_cats):
     assert ingest_pdf(pdf_cats, "cats.pdf", store, embedder, 400, 50).status == "indexed"
 
     at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception
+    at.radio[0].set_value("AI Chat").run()
     assert not at.exception
 
     at.chat_input[0].set_value("How many hours do cats sleep each day?").run()
