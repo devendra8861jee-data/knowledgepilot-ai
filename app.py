@@ -98,7 +98,17 @@ def render_sidebar() -> str:
     st.sidebar.caption("PRIVATE PDF KNOWLEDGE WORKSPACE")
     st.sidebar.divider()
     page = st.sidebar.radio(
-        "Workspace navigation", APP_PAGES, key="kp_active_page", label_visibility="collapsed"
+        "Workspace navigation",
+        APP_PAGES,
+        key="kp_active_page",
+        label_visibility="collapsed",
+        format_func=lambda value: {
+            "Overview": "⌂  Overview",
+            "Documents": "▤  Documents",
+            "AI Chat": "✦  AI Chat",
+            "Evaluation": "▥  Evaluation",
+            "Settings & Help": "⚙  Settings & Help",
+        }.get(value, value),
     )
     st.sidebar.divider()
     base = apply_user_settings(load_settings()) if "apply_user_settings" in globals() else load_settings()
@@ -326,7 +336,6 @@ def render_documents_tab(settings, store: VectorStore, embedder) -> None:
                     st.error(f"Could not index {report.filename}: {report.message}")
                 for warning in report.warnings:
                     st.warning(f"{report.filename}: {warning}")
-            st.rerun()
 
     st.subheader("Your indexed documents")
     docs = store.list_documents()
@@ -561,7 +570,8 @@ def render_chat_tab(settings, store: VectorStore, embedder) -> None:
     with chat_col:
         st.markdown("**Ask your documents**")
         st.caption(f"Scope: {selected_label}")
-        if not active_session["messages"]:
+        pending_suggestion_exists = bool(st.session_state.get(f"kp_pending_prompt_{active_id}"))
+        if not active_session["messages"] and not pending_suggestion_exists:
             with st.container(border=True):
                 st.markdown("#### What would you like to know?")
                 st.caption("Answers use evidence from the selected PDF(s), with page citations where available.")
@@ -586,9 +596,10 @@ def render_chat_tab(settings, store: VectorStore, embedder) -> None:
                     )
 
         pending_prompt = st.session_state.pop(f"kp_pending_prompt_{active_id}", None)
-        question = pending_prompt or st.chat_input(
+        typed_question = st.chat_input(
             "Ask any question about your document…", key=f"kp_chat_input_{active_id}"
         )
+        question = pending_prompt or typed_question
         if question:
             active_session["messages"].append({"role": "user", "content": question})
             if active_session["title"] == "New conversation":
