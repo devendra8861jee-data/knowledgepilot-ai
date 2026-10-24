@@ -374,114 +374,255 @@ def render_documents_tab(settings, store: VectorStore, embedder) -> None:
 
 
 # ------------------------------------------------------------------------- chat
-def render_answer(result: AnswerResult, threshold: float) -> None:
-    """Show one assistant answer with citations and the retrieved context."""
+def _resolve_citation_doc_id(citation, result: AnswerResult, docs: list[dict]) -> str | None:
+    for item in result.retrieved:
+        if item.chunk.chunk_id == citation.chunk_id:
+            return item.chunk.doc_id
+    matches = [doc for doc in docs if doc["filename"] == citation.filename]
+    return matches[0]["doc_id"] if len(matches) == 1 else None
+
+
+def render_answer(
+    result: AnswerResult,
+    threshold: float,
+    docs: list[dict] | None = None,
+    session_id: str = "",
+    message_index: int = 0,
+) -> None:
+    """Render one answer with source links that focus the PDF preview pane."""
     if result.error:
         st.error(result.error)
-        if result.retrieved:
-            st.caption("The retrieved passages are still available below.")
+        st.caption("Try again, check your provider settings, or inspect the retrieved passages below.")
     elif result.mode == "fallback":
         st.warning(result.answer or FALLBACK_MESSAGE)
+        st.caption("Try selecting another PDF, rephrasing the question, or adjusting the relevance threshold.")
     else:
         st.markdown(result.answer)
     for warning in result.warnings:
         st.warning(warning)
 
     if result.citations:
-        st.markdown("**Sources**")
+        st.markdown("**Sources used**")
         for citation in result.citations:
-            title = f"[{citation.index}] {format_citation_label(citation)} - score {citation.score:.2f}"
-            with st.expander(title):
-                st.write(citation.excerpt)
+            resolved_id = _resolve_citation_doc_id(citation, result, docs or [])
+            source_cols = st.columns([1.2, 3.8], vertical_alignment="center")
+            with source_cols[0]:
+                if resolved_id:
+                    doc_match = next((item for item in docs or [] if item["doc_id"] == resolved_id), None)
+                    doc_label = f"{doc_match['filename']} · {doc_match['doc_id'][:6]}" if doc_match else "All indexed PDFs"
+                    st.button(
+                        f"📄 Page {citation.page}",
+                        key=f"citation_jump_{session_id}_{message_index}_{citation.index}",
+                        on_click=_jump_to_source,
+                        args=(resolved_id, citation.page, doc_label),
+                        help="Open this PDF page in the preview panel.",
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption(f"Page {citation.page}")
+            with source_cols[1]:
+                with st.expander(f"[{citation.index}] {format_citation_label(citation)} · relevance {citation.score:.2f}"):
+                    st.write(citation.excerpt)
 
     if result.retrieved:
-        with st.expander(f"Retrieved context (debug view, {len(result.retrieved)} passages)"):
+        with st.expander(f"Technical details · {len(result.retrieved)} retrieved passages"):
             rows = [
                 {
-                    "rank": r.rank,
-                    "file": r.chunk.filename,
-                    "page": r.chunk.page,
-                    "score": round(r.score, 4),
-                    "used_as_evidence": r.score >= threshold,
+                    "Rank": item.rank,
+                    "File": item.chunk.filename,
+                    "PDF page": item.chunk.page,
+                    "Score": round(item.score, 4),
+                    "Used as evidence": item.score >= threshold,
                 }
-                for r in result.retrieved
+                for item in result.retrieved
             ]
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-            for r in result.retrieved:
-                st.markdown(f"**#{r.rank} - {r.chunk.filename}, page {r.chunk.page} - score {r.score:.3f}**")
-                st.text(r.chunk.text)
+            for item in result.retrieved:
+                st.markdown(f"**#{item.rank} · {item.chunk.filename}, page {item.chunk.page} · score {item.score:.3f}**")
+                st.text(item.chunk.text)
 
-    parts = [f"mode: {result.mode}", f"retrieval: {result.retrieval_latency_s * 1000:.0f} ms"]
+    details = [f"Retrieval {result.retrieval_latency_s * 1000:.0f} ms"]
     if result.generation_latency_s:
-        parts.append(f"generation: {result.generation_latency_s:.2f} s")
+        details.append(f"Generation {result.generation_latency_s:.2f} s")
     if result.prompt_tokens is not None:
-        parts.append(f"tokens: {result.prompt_tokens} in / {result.completion_tokens} out")
-    st.caption(" | ".join(parts))
+        details.append(f"{result.prompt_tokens} input / {result.completion_tokens} output tokens")
+    st.caption(" · ".join(details))
+
+
+def _new_chat_session(doc_id: str | None = None) -> dict:
+    return {"id": uuid.uuid4().hex[:10], "title": "New conversation", "doc_id": doc_id, "messages": []}
+
+
+def _ensure_chat_sessions() -> None:
+    if not st.session_state.get("kp_chat_sessions"):
+        first = _new_chat_session()
+        st.session_state["kp_chat_sessions"] = [first]
+        st.session_state["kp_active_chat_id"] = first["id"]
+    sessions = st.session_state["kp_chat_sessions"]
+    if st.session_state.get("kp_active_chat_id") not in {item["id"] for item in sessions}:
+        st.session_state["kp_active_chat_id"] = sessions[0]["id"]
 
 
 def render_chat_tab(settings, store: VectorStore, embedder) -> None:
     docs = store.list_documents()
+    st.markdown('<div class="kp-eyebrow">DOCUMENT ASSISTANT</div>', unsafe_allow_html=True)
+    st.title("AI Chat")
+    st.caption("Ask questions about your PDFs. Select a citation to inspect its page in the document pane.")
+
     if not docs:
-        st.info("Index at least one PDF in the Documents tab before asking questions.")
-        return
-
-    options = {f"{d['filename']} ({d['doc_id'][:6]})": d["doc_id"] for d in docs}
-    chosen = st.multiselect("Search only in (leave empty for all documents)", list(options))
-    doc_ids = [options[name] for name in chosen] or None
-
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    if st.session_state.messages:
-        export_lines = []
-        for item in st.session_state.messages:
-            if item["role"] == "user":
-                export_lines.extend([f"## You\n\n{item['content']}", ""])
-            else:
-                export_lines.extend([f"## KnowledgePilot AI\n\n{item['result'].answer or item['result'].error or ''}", ""])
-                for citation in item["result"].citations:
-                    export_lines.append(f"- Source: {format_citation_label(citation)} (page {citation.page})")
-                export_lines.append("")
-        st.download_button(
-            "⬇️ Export chat",
-            "\n".join(export_lines),
-            file_name="knowledgepilot-chat.md",
-            mime="text/markdown",
-            use_container_width=True,
+        st.markdown(
+            '<div class="kp-blank">💬<br><br><b>No indexed documents yet</b><br>'
+            'Upload a PDF in Documents first, then return here to ask questions.</div>',
+            unsafe_allow_html=True,
         )
-
-    if st.session_state.messages and st.button("🧹 Clear chat"):
-        st.session_state.messages = []
-        st.rerun()
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            if message["role"] == "user":
-                st.markdown(message["content"])
-            else:
-                render_answer(message["result"], message["threshold"])
-
-    question = st.chat_input("Ask a question about your documents")
-    if not question:
         return
 
-    st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.markdown(question)
+    _ensure_chat_sessions()
+    sessions = st.session_state["kp_chat_sessions"]
+    active_id = st.session_state["kp_active_chat_id"]
+    active_session = next(item for item in sessions if item["id"] == active_id)
 
-    with st.chat_message("assistant"):
-        try:
-            llm = get_llm_client(settings)
-        except LLMConfigError as exc:
-            st.error(str(exc))
-            return
-        retriever = Retriever(store, embedder, settings.top_k, settings.min_relevance)
-        with st.spinner("Searching your documents..."):
-            result = answer_question(question, retriever, llm=llm, doc_ids=doc_ids)
-        render_answer(result, settings.min_relevance)
-    st.session_state.messages.append(
-        {"role": "assistant", "result": result, "threshold": settings.min_relevance}
-    )
+    options = {"All indexed PDFs": None}
+    for doc in docs:
+        options[f"{doc['filename']} · {doc['doc_id'][:6]}"] = doc["doc_id"]
+    selected_label = st.session_state.get("kp_selected_doc")
+    if selected_label not in options:
+        active_doc_id = active_session.get("doc_id")
+        selected_label = next(
+            (label for label, doc_id in options.items() if doc_id == active_doc_id),
+            next((label for label, doc_id in options.items() if doc_id is not None), "All indexed PDFs"),
+        )
+        st.session_state["kp_selected_doc"] = selected_label
+
+    conversation_col, document_col, chat_col = st.columns([0.72, 1.25, 1.12], gap="medium")
+
+    with conversation_col:
+        with st.container(border=True):
+            st.markdown("**Conversations**")
+            if st.button("＋ New chat", type="primary", use_container_width=True):
+                new_session = _new_chat_session(options.get(st.session_state.get("kp_selected_doc")))
+                sessions.insert(0, new_session)
+                st.session_state["kp_active_chat_id"] = new_session["id"]
+                st.rerun()
+            search_conversations = st.text_input(
+                "Search conversations", placeholder="Find a chat…", label_visibility="collapsed",
+                key="kp_chat_search",
+            )
+            visible_sessions = [
+                item for item in sessions
+                if search_conversations.strip().lower() in item["title"].lower()
+            ]
+            for item in visible_sessions:
+                label = ("● " if item["id"] == active_id else "") + (item["title"][:34] + ("…" if len(item["title"]) > 34 else ""))
+                if st.button(label, key=f"select_chat_{item['id']}", use_container_width=True):
+                    st.session_state["kp_active_chat_id"] = item["id"]
+                    st.rerun()
+            st.caption(f"{len(sessions)} chat(s) in this browser session")
+            if active_session["messages"]:
+                export_lines = []
+                for message in active_session["messages"]:
+                    if message["role"] == "user":
+                        export_lines.extend([f"## You\n\n{message['content']}", ""])
+                    else:
+                        answer = message["result"].answer or message["result"].error or ""
+                        export_lines.extend([f"## KnowledgePilot AI\n\n{answer}", ""])
+                        for citation in message["result"].citations:
+                            export_lines.append(f"- {format_citation_label(citation)}")
+                        export_lines.append("")
+                st.download_button(
+                    "Export this chat", "\n".join(export_lines),
+                    file_name="knowledgepilot-chat.md", mime="text/markdown",
+                    use_container_width=True,
+                )
+                if st.button("Clear messages", use_container_width=True):
+                    active_session["messages"] = []
+                    active_session["title"] = "New conversation"
+                    st.rerun()
+
+    with document_col:
+        st.markdown("**Document preview**")
+        selected_label = st.selectbox(
+            "Knowledge source", list(options.keys()), key="kp_selected_doc",
+            label_visibility="collapsed",
+            help="Choose one PDF to preview it, or select all PDFs for cross-document answers.",
+        )
+        selected_doc_id = options[selected_label]
+        active_session["doc_id"] = selected_doc_id
+        selected_doc = next((doc for doc in docs if doc["doc_id"] == selected_doc_id), None)
+        if selected_doc:
+            render_pdf_preview(settings, selected_doc)
+        else:
+            st.markdown(
+                '<div class="kp-blank">Choose a specific PDF above to see its pages here.<br><br>'
+                'Questions will search across all indexed PDFs.</div>',
+                unsafe_allow_html=True,
+            )
+
+    with chat_col:
+        st.markdown("**Ask your documents**")
+        st.caption(f"Scope: {selected_label}")
+        if not active_session["messages"]:
+            with st.container(border=True):
+                st.markdown("#### What would you like to know?")
+                st.caption("Answers use evidence from the selected PDF(s), with page citations where available.")
+                prompts = [
+                    "Summarize the main points",
+                    "What are the key findings?",
+                    "List important dates or requirements",
+                ]
+                for idx, prompt in enumerate(prompts):
+                    if st.button(prompt, key=f"suggest_{active_id}_{idx}", use_container_width=True):
+                        st.session_state[f"kp_pending_prompt_{active_id}"] = prompt
+                        st.rerun()
+
+        for message_index, message in enumerate(active_session["messages"]):
+            with st.chat_message(message["role"]):
+                if message["role"] == "user":
+                    st.markdown(message["content"])
+                else:
+                    render_answer(
+                        message["result"], message["threshold"], docs,
+                        session_id=active_id, message_index=message_index,
+                    )
+
+        pending_prompt = st.session_state.pop(f"kp_pending_prompt_{active_id}", None)
+        question = pending_prompt or st.chat_input(
+            "Ask any question about your document…", key=f"kp_chat_input_{active_id}"
+        )
+        if question:
+            active_session["messages"].append({"role": "user", "content": question})
+            if active_session["title"] == "New conversation":
+                active_session["title"] = question[:36] + ("…" if len(question) > 36 else "")
+            with st.chat_message("user"):
+                st.markdown(question)
+            with st.chat_message("assistant"):
+                try:
+                    llm = get_llm_client(settings)
+                    retriever = Retriever(store, embedder, settings.top_k, settings.min_relevance)
+                    with st.spinner("Searching documents and preparing a cited answer…"):
+                        result = answer_question(
+                            question, retriever, llm=llm,
+                            doc_ids=[selected_doc_id] if selected_doc_id else None,
+                        )
+                except LLMConfigError as exc:
+                    result = AnswerResult(
+                        question=question, answer="", sufficient_evidence=False,
+                        mode="error", error=str(exc),
+                    )
+                except Exception as exc:
+                    logger.exception("Chat request failed")
+                    result = AnswerResult(
+                        question=question, answer="", sufficient_evidence=False,
+                        mode="error",
+                        error=f"Something went wrong while answering ({type(exc).__name__}). Check Settings & Help and try again.",
+                    )
+                render_answer(
+                    result, settings.min_relevance, docs,
+                    session_id=active_id, message_index=len(active_session["messages"]),
+                )
+            active_session["messages"].append(
+                {"role": "assistant", "result": result, "threshold": settings.min_relevance}
+            )
 
 
 # ------------------------------------------------------------------- evaluation
@@ -649,85 +790,157 @@ def render_evaluation_tab(settings) -> None:
         render_report(report)
 
 
-# ------------------------------------------------------------------------- main
-def main() -> None:
-    st.markdown('<div class="kp-eyebrow">Private knowledge workspace</div>', unsafe_allow_html=True)
+# ------------------------------------------------------------------------- dashboard
+def render_dashboard(settings, store: VectorStore) -> None:
+    from src.evaluation import load_report
+
+    docs = store.list_documents()
+    total_pages = sum(int(doc.get("pages", 0) or 0) for doc in docs)
+    total_chunks = sum(int(doc.get("chunks", 0) or 0) for doc in docs)
+    sessions = st.session_state.get("kp_chat_sessions", [])
+    questions_this_session = sum(
+        sum(1 for message in session.get("messages", []) if message.get("role") == "user")
+        for session in sessions
+    )
+    report = load_report(EVAL_RESULTS_PATH)
+
+    st.markdown('<div class="kp-eyebrow">WORKSPACE OVERVIEW</div>', unsafe_allow_html=True)
     st.title("KnowledgePilot AI")
     st.markdown(
-        '<div class="kp-hero"><strong>Turn your PDFs into answers.</strong><br>'
-        '<span class="kp-muted">Search your documents, ask questions in natural language, and verify every answer with source citations.</span></div>',
+        '<div class="kp-hero"><strong>Your PDFs. Your knowledge base. Verifiable answers.</strong><br>'
+        '<span class="kp-muted">Upload documents, ask questions in natural language, and trace answers back to their PDF pages.</span></div>',
         unsafe_allow_html=True,
     )
 
-    settings = render_sidebar()
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Indexed PDFs", len(docs))
+    metric_cols[1].metric("Searchable pages", total_pages)
+    metric_cols[2].metric("Indexed chunks", total_chunks)
+    metric_cols[3].metric("Questions this session", questions_this_session)
+
+    pipeline_col, retrieval_col = st.columns([1.05, 1], gap="medium")
+    with pipeline_col:
+        with st.container(border=True):
+            st.markdown("### RAG pipeline overview")
+            pipeline_steps = [
+                ("01", "Document", "PDF upload", bool(docs)),
+                ("02", "Indexing", f"{total_chunks:,} chunks searchable", total_chunks > 0),
+                ("03", "Retrieval", "Semantic search ready", total_chunks > 0),
+                ("04", "Answer", settings.llm_model if settings.llm_provider != "none" and settings.has_api_key else "Extractive mode", True),
+            ]
+            flow_cols = st.columns(4)
+            for col, (number, label, sublabel, ready) in zip(flow_cols, pipeline_steps):
+                with col:
+                    st.markdown(f"**{number} · {label}**")
+                    status_class = "kp-status-dot" if ready else "kp-muted"
+                    status_text = "● Ready" if ready else "○ Waiting"
+                    st.markdown(f'<span class="{status_class}">{status_text}</span>', unsafe_allow_html=True)
+                    st.caption(sublabel)
+            st.divider()
+            if docs:
+                st.success(f"Knowledge base ready · {len(docs)} document(s) indexed")
+            else:
+                st.info("Start by uploading a PDF in Documents.")
+            if settings.llm_provider != "none" and settings.has_api_key:
+                st.caption(f"LLM configured: {settings.llm_model}. Key presence is shown, not a verified live connection.")
+            elif settings.llm_provider != "none":
+                st.warning("LLM selected but LLM_API_KEY is missing.")
+            else:
+                st.caption("Answer generation is set to extractive mode.")
+
+    with retrieval_col:
+        with st.container(border=True):
+            st.markdown("### Retrieval performance")
+            if report:
+                summary = report["summary"]
+                gt = summary["ground_truth_retrieval_metrics"]
+                k = report["config"].get("k", settings.top_k)
+                m1, m2 = st.columns(2)
+                m1.metric(f"Recall@{k}", _pct(gt.get(f"recall@{k}")))
+                m2.metric(f"Precision@{k}", _pct(gt.get(f"precision@{k}")))
+                m3, m4 = st.columns(2)
+                m3.metric("Hit rate", _pct(gt.get(f"hit_rate@{k}")))
+                m4.metric("MRR", _pct(gt.get("mrr")))
+                chart = pd.DataFrame(
+                    [
+                        {"Metric": f"Recall@{k}", "Score": gt.get(f"recall@{k}")},
+                        {"Metric": f"Precision@{k}", "Score": gt.get(f"precision@{k}")},
+                        {"Metric": "Hit rate", "Score": gt.get(f"hit_rate@{k}")},
+                        {"Metric": "MRR", "Score": gt.get("mrr")},
+                    ]
+                ).dropna()
+                if not chart.empty:
+                    st.bar_chart(chart, x="Metric", y="Score")
+                st.caption("From the latest labelled evaluation run, not live production telemetry.")
+            else:
+                st.markdown('<div class="kp-blank">No evaluation report yet.<br><br>Run Evaluation to measure recall, precision, MRR, latency and abstention on the sample dataset.</div>', unsafe_allow_html=True)
+
+    activity_col, quality_col = st.columns([1, 1], gap="medium")
+    with activity_col:
+        with st.container(border=True):
+            st.markdown("### Knowledge base & indexing")
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Documents", len(docs))
+            d2.metric("Pages with text", total_pages)
+            d3.metric("Chunks", total_chunks)
+            if docs:
+                st.dataframe(
+                    pd.DataFrame([
+                        {"Document": doc["filename"], "Pages": doc["pages"], "Chunks": doc["chunks"]}
+                        for doc in docs
+                    ]),
+                    hide_index=True, width="stretch",
+                )
+            else:
+                st.info("No PDFs indexed yet.")
+    with quality_col:
+        with st.container(border=True):
+            st.markdown("### Answer quality & reliability")
+            if report:
+                summary = report["summary"]
+                judged = summary["llm_judged_metrics"]
+                a, b = st.columns(2)
+                a.metric("Faithfulness", _pct(judged.get("faithfulness")))
+                b.metric("Answer relevance", _pct(judged.get("answer_relevance")))
+                op_a, op_b = st.columns(2)
+                op_a.metric("Mean latency", _pct(summary["operational_metrics"].get("mean_latency_s")) + " s")
+                op_b.metric("Correct abstention", _pct(summary["abstention_behaviour"].get("correct_abstention_rate_unanswerable")))
+                if judged.get("faithfulness") is None or judged.get("answer_relevance") is None:
+                    st.info("Run Evaluation with the LLM judge enabled to measure faithfulness and answer relevance.")
+            else:
+                st.info("Measured answer-quality metrics will appear after running an evaluation. No scores are fabricated.")
+    st.caption("Local app analytics shown here are derived from the current index and the latest evaluation report. Persistent usage telemetry is not collected.")
+
+
+# ------------------------------------------------------------------------- main
+def main() -> None:
+    page = render_sidebar()
+    base_settings = load_settings()
+    settings = apply_user_settings(base_settings)
+
+    # Keep Settings reachable even when an embedding model fails to load.
+    if page == "Settings & Help":
+        render_settings_page(base_settings)
+        return
+    if page == "Evaluation":
+        st.markdown('<div class="kp-eyebrow">QUALITY & RELIABILITY</div>', unsafe_allow_html=True)
+        render_evaluation_tab(settings)
+        return
 
     try:
         embedder = load_embedder(settings.embedding_backend, settings.embedding_model)
         store = load_store(str(settings.chroma_dir), embedder.name)
     except (EmbeddingError, VectorStoreError, ValueError) as exc:
-        st.error(str(exc))
+        st.error(f"Could not initialize KnowledgePilot AI: {exc}")
+        st.info("Open Settings & Help, check the embedding backend/model, and try again.")
         st.stop()
 
-    docs_now = store.list_documents()
-    total_pages = sum(int(d.get("pages", 0) or 0) for d in docs_now)
-    total_chunks = sum(int(d.get("chunks", 0) or 0) for d in docs_now)
-    dash, tab_docs, tab_chat, tab_eval, tab_help = st.tabs(
-        ["Overview", "📄 Documents", "💬 AI Chat", "📊 Evaluation", "❔ Help"]
-    )
-    with dash:
-        st.subheader("Workspace overview")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Indexed PDFs", len(docs_now), help="Unique PDF files in your local index")
-        m2.metric("Pages indexed", total_pages)
-        m3.metric("Searchable chunks", total_chunks)
-        m4.metric("Answer engine", "Groq / LLM" if settings.llm_provider != "none" and settings.has_api_key else "Extractive")
-        left, right = st.columns([1.3, 1])
-        with left:
-            st.markdown("#### Recent documents")
-            if docs_now:
-                st.dataframe(
-                    pd.DataFrame([
-                        {"Document": d["filename"], "Pages": d["pages"], "Chunks": d["chunks"]}
-                        for d in docs_now
-                    ]),
-                    hide_index=True,
-                    width="stretch",
-                )
-            else:
-                st.info("No PDFs indexed yet. Open Documents to upload your first file.")
-        with right:
-            st.markdown("#### System status")
-            st.success(f"Embedding backend: {settings.embedding_backend}")
-            if settings.llm_provider != "none" and settings.has_api_key:
-                st.success(f"LLM configured: {settings.llm_model}")
-            elif settings.llm_provider == "none":
-                st.info("LLM generation is off; extractive answers are available.")
-            else:
-                st.warning("LLM selected, but API key is missing. Add LLM_API_KEY to .env.")
-            st.caption("Your PDFs and vector index are stored locally according to DATA_DIR.")
-        st.markdown("#### Get started")
-        st.write("1. Upload PDFs in **Documents**.  2. Ask questions in **AI Chat**.  3. Check retrieval quality in **Evaluation**.")
-    with tab_docs:
+    if page == "Overview":
+        render_dashboard(settings, store)
+    elif page == "Documents":
         render_documents_tab(settings, store, embedder)
-    with tab_chat:
+    elif page == "AI Chat":
         render_chat_tab(settings, store, embedder)
-    with tab_eval:
-        render_evaluation_tab(settings)
-    with tab_help:
-        st.markdown(
-            """
-**How it works:** PDFs are split into overlapping chunks, embedded, and stored in ChromaDB.
-A question is embedded, the most similar chunks are retrieved, and the answer is built only from
-those chunks. Citations are looked up from the retrieved chunks, never typed by the model.
-
-**Common problems**
-- *Scanned PDF*: the file has no text layer. Run OCR first, then upload it again.
-- *Embedding model download fails*: the first run needs internet. Use the `hashing` backend to test offline.
-- *No answer found*: lower the minimum relevance score, raise top-k, or check the question wording.
-- *API key errors*: put `LLM_API_KEY` in `.env` (see README) and restart the app.
-- *Changed chunk size*: remove and re-upload the documents so they are indexed with the new settings.
-            """
-        )
 
 
 main()
