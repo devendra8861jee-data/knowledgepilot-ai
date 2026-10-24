@@ -6,7 +6,10 @@ Run with:  streamlit run app.py
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
+
+import pymupdf
 
 import pandas as pd
 import streamlit as st
@@ -25,34 +28,44 @@ logger = logging.getLogger("knowledgepilot.app")
 
 st.set_page_config(page_title="KnowledgePilot AI", page_icon="📚", layout="wide", initial_sidebar_state="expanded")
 
-# Lightweight responsive styling; the app remains native Streamlit.
+# Dark navy theme inspired by the supplied RAG dashboard and document workspace.
 st.markdown("""
 <style>
-  :root { --kp-ink: #172033; --kp-muted: #667085; --kp-line: #e6eaf0; --kp-accent: #4f46e5; }
-  .stApp { background: linear-gradient(180deg, #f8faff 0%, #f7f8fc 240px, #ffffff 100%); color: var(--kp-ink); }
-  [data-testid="stSidebar"] { background: #111827; border-right: 1px solid #263246; }
-  [data-testid="stSidebar"] * { color: #f3f4f6; }
-  [data-testid="stSidebar"] [data-baseweb="select"] * { color: #111827; }
-  [data-testid="stSidebar"] input { color: #111827 !important; }
-  h1 { letter-spacing: -0.035em; font-weight: 760 !important; }
-  h2, h3 { letter-spacing: -0.02em; }
-  [data-testid="stMetric"] { background: #fff; border: 1px solid var(--kp-line); border-radius: 16px; padding: 16px 18px; box-shadow: 0 4px 18px rgba(15,23,42,.035); }
-  [data-testid="stMetricLabel"] { color: var(--kp-muted); }
-  [data-testid="stMetricValue"] { color: var(--kp-ink); }
-  [data-testid="stTabs"] button { border-radius: 10px 10px 0 0; font-weight: 650; }
-  [data-testid="stChatMessage"] { border: 1px solid var(--kp-line); border-radius: 16px; padding: 14px; background: rgba(255,255,255,.86); }
-  [data-testid="stFileUploader"] { border: 1.5px dashed #a5b4fc; border-radius: 16px; padding: 10px; background: #fafaff; }
-  div.stButton > button[kind="primary"], div.stDownloadButton > button { border-radius: 10px; font-weight: 650; }
-  [data-testid="stExpander"] { border: 1px solid var(--kp-line); border-radius: 12px; background: rgba(255,255,255,.78); }
-  .kp-eyebrow { color: #4f46e5; font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; }
-  .kp-hero { padding: 1.15rem 1.3rem; border-radius: 18px; border: 1px solid #e0e7ff; background: linear-gradient(120deg,#eef2ff,#ffffff 70%); margin: .4rem 0 1.2rem 0; }
-  .kp-muted { color: #667085; font-size: .92rem; }
-  @media (max-width: 700px) {
-    .block-container { padding: 1rem .8rem 2rem .8rem; }
-    h1 { font-size: 1.8rem !important; }
-    [data-testid="stMetric"] { padding: 11px; }
-    [data-testid="stSidebar"] { min-width: 0; }
-  }
+:root { --kp-bg:#080f1e; --kp-panel:#0e192c; --kp-panel-2:#111f35; --kp-line:#263650; --kp-text:#e6edf8; --kp-muted:#95a7c2; --kp-blue:#4b7cff; --kp-cyan:#4bc7e8; --kp-green:#37c878; }
+.stApp { background:var(--kp-bg); color:var(--kp-text); }
+[data-testid="stHeader"] { background:rgba(8,15,30,.92); }
+[data-testid="stSidebar"] { background:#070d19; border-right:1px solid #1d2a40; }
+[data-testid="stSidebar"] * { color:#dbe5f6; }
+[data-testid="stSidebar"] input { color:#101827 !important; }
+[data-testid="stSidebar"] [data-baseweb="select"] * { color:#101827; }
+.block-container { padding-top:1.35rem; padding-bottom:2rem; max-width:1800px; }
+h1,h2,h3 { color:#f2f6ff !important; letter-spacing:-.025em; }
+h1 { font-weight:760 !important; }
+p,label,li { color:#d3deee; }
+[data-testid="stCaptionContainer"], .stCaption { color:var(--kp-muted) !important; }
+[data-testid="stMetric"] { background:linear-gradient(145deg,#111f35,#0e192b); border:1px solid var(--kp-line); border-radius:13px; padding:15px 16px; min-height:106px; box-shadow:0 8px 24px rgba(0,0,0,.14); }
+[data-testid="stMetricLabel"] { color:#9db0ca !important; font-size:.84rem; }
+[data-testid="stMetricValue"] { color:#f4f7ff !important; font-weight:720; }
+[data-testid="stMetricDelta"] { font-size:.75rem; }
+[data-testid="stVerticalBlockBorderWrapper"] { background:#0e192b; border-color:var(--kp-line) !important; border-radius:14px; }
+[data-testid="stChatMessage"] { background:#101c30; border:1px solid #263650; border-radius:14px; padding:13px 15px; margin-bottom:.7rem; }
+[data-testid="stFileUploader"] { background:#0e192b; border:1.5px dashed #3b5277; border-radius:14px; padding:12px; }
+[data-testid="stExpander"] { background:#0e192b; border:1px solid #263650; border-radius:11px; }
+.stButton > button,.stDownloadButton > button,[data-testid="stFormSubmitButton"] > button { border-radius:9px; border:1px solid #314563; font-weight:650; min-height:2.45rem; }
+.stButton > button[kind="primary"],[data-testid="stFormSubmitButton"] > button[kind="primary"] { background:#315ff4; border-color:#4875ff; color:white; }
+.stButton > button:hover { border-color:#6191ff; color:white; }
+[data-baseweb="input"] input,[data-baseweb="textarea"] textarea { background:#101c30 !important; color:#edf3ff !important; }
+[data-baseweb="select"] > div { background:#101c30; border-color:#314563; }
+hr { border-color:#24334b; }
+.kp-brand { display:flex; align-items:center; gap:.65rem; font-weight:800; font-size:1.05rem; padding:.25rem 0 .35rem; }
+.kp-brand-mark { display:inline-flex; align-items:center; justify-content:center; width:2rem; height:2rem; border-radius:.65rem; background:#203d78; color:#89b4ff; font-size:1.15rem; }
+.kp-eyebrow { color:#76a5ff; font-size:.73rem; text-transform:uppercase; letter-spacing:.14em; font-weight:800; }
+.kp-hero { padding:1.15rem 1.3rem; border-radius:16px; border:1px solid #263c60; background:linear-gradient(115deg,#101e35,#0b1527 72%); margin:.35rem 0 1.1rem; }
+.kp-muted { color:#96a9c4; font-size:.9rem; }
+.kp-status-dot { color:#43d58a; font-weight:800; }
+.kp-blank { border:1px dashed #354967; border-radius:15px; padding:1.25rem; color:#9eb0c8; background:#0c1729; }
+@media (max-width:850px) { .block-container { padding:1rem .75rem 2rem; } h1 { font-size:1.8rem !important; } [data-testid="stMetric"] { padding:10px; min-height:84px; } }
+@media (max-width:560px) { [data-testid="stSidebar"] { min-width:0; } [data-testid="stMetricValue"] { font-size:1.15rem; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -72,123 +85,292 @@ def load_store(persist_dir: str, embedder_name: str) -> VectorStore:
     return VectorStore(persist_dir, embedder_name)
 
 
-# ---------------------------------------------------------------------- sidebar
-def render_sidebar():
-    """Show configuration widgets and return the effective settings."""
-    base = load_settings()
-    st.sidebar.markdown("## 📚 KnowledgePilot")
-    st.sidebar.caption("Your private PDF research workspace")
+# ---------------------------------------------------------------------- navigation
+APP_PAGES = ["Overview", "Documents", "AI Chat", "Evaluation", "Settings & Help"]
+
+
+def render_sidebar() -> str:
+    """Render compact primary navigation and return the active page."""
+    st.sidebar.markdown(
+        '<div class="kp-brand"><span class="kp-brand-mark">✳</span><span>KnowledgePilot AI</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.sidebar.caption("PRIVATE PDF KNOWLEDGE WORKSPACE")
     st.sidebar.divider()
-    st.sidebar.header("⚙️ Settings")
-
-    st.sidebar.subheader("Embeddings")
-    backends = list(SUPPORTED_EMBEDDING_BACKENDS)
-    backend = st.sidebar.selectbox(
-        "Embedding backend",
-        backends,
-        index=backends.index(base.embedding_backend) if base.embedding_backend in backends else 0,
-        help="'sentence-transformers' = real semantic search (downloads a model once). "
-        "'hashing' = offline keyword-style demo with no downloads.",
+    page = st.sidebar.radio(
+        "Workspace navigation", APP_PAGES, key="kp_active_page", label_visibility="collapsed"
     )
+    st.sidebar.divider()
+    base = apply_user_settings(load_settings()) if "apply_user_settings" in globals() else load_settings()
+    st.sidebar.markdown("#### System status")
+    st.sidebar.markdown('<span class="kp-status-dot">●</span> Local index available', unsafe_allow_html=True)
+    if base.llm_provider != "none" and base.has_api_key:
+        st.sidebar.caption(f"LLM configured · {base.llm_model}")
+    elif base.llm_provider == "none":
+        st.sidebar.caption("Extractive answer mode")
+    else:
+        st.sidebar.caption("LLM selected · API key missing")
+    st.sidebar.divider()
+    st.sidebar.caption("PDFs and the vector index are stored in your configured local data directory.")
+    return page
 
-    st.sidebar.subheader("Chunking (applies when indexing)")
-    chunk_size = st.sidebar.slider("Chunk size (characters)", 200, 2000, base.chunk_size, 50)
-    max_overlap = max(0, chunk_size - 50)
-    chunk_overlap = st.sidebar.slider(
-        "Chunk overlap (characters)", 0, min(500, max_overlap), min(base.chunk_overlap, max_overlap), 10
-    )
 
-    st.sidebar.subheader("Retrieval")
-    top_k = st.sidebar.slider("Top-k passages", 1, 10, base.top_k)
-    default_threshold = 0.15 if backend == "hashing" else base.min_relevance
-    min_relevance = st.sidebar.slider(
-        "Minimum relevance score",
-        0.0,
-        1.0,
-        float(default_threshold),
-        0.01,
-        help= "Passages below this cosine similarity are not treated as evidence. "
-        "Sentence-transformer scores can be low; start around 0.10 and raise it if irrelevant "
-        "passages are accepted. If nothing reaches it, the app shows the insufficient-evidence message.",
-    )
+def apply_user_settings(base):
+    """Apply only values explicitly saved from the settings page."""
+    overrides = st.session_state.get("kp_settings_overrides", {})
+    try:
+        return base.with_overrides(**overrides)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Ignoring invalid session settings: %s", exc)
+        return base
 
-    st.sidebar.subheader("Answer generation")
-    provider = st.sidebar.selectbox(
-        "LLM provider",
-        ["none", "openai_compatible"],
-        index=0 if base.llm_provider == "none" else 1,
-        help="'none' shows retrieved passages only (free, offline).",
-    )
-    model = st.sidebar.text_input("LLM model", value=base.llm_model)
-    base_url = st.sidebar.text_input("LLM base URL", value=base.llm_base_url)
-    if provider == "openai_compatible":
-        if base.has_api_key:
-            st.sidebar.success("API key found in environment (value hidden).")
+
+def render_settings_page(base) -> None:
+    """Accessible grouped configuration with explicit Apply behavior."""
+    st.markdown('<div class="kp-eyebrow">PREFERENCES</div>', unsafe_allow_html=True)
+    st.title("Settings & Help")
+    st.caption("Tune retrieval and answer generation. API keys stay in your private .env file.")
+    settings = apply_user_settings(base)
+
+    with st.form("kp_settings_form", border=True):
+        st.subheader("1. Document understanding")
+        c1, c2 = st.columns(2)
+        with c1:
+            backend_options = list(SUPPORTED_EMBEDDING_BACKENDS)
+            backend = st.selectbox(
+                "Embedding backend", backend_options,
+                index=backend_options.index(settings.embedding_backend)
+                if settings.embedding_backend in backend_options else 0,
+                help="Sentence Transformers gives semantic search; hashing is a lightweight offline fallback.",
+            )
+            embedding_model = st.text_input("Embedding model", value=settings.embedding_model)
+            chunk_size = st.number_input("Chunk size (characters)", 200, 2000, int(settings.chunk_size), 50)
+        with c2:
+            chunk_overlap = st.number_input("Chunk overlap (characters)", 0, 500, int(min(settings.chunk_overlap, 500)), 10)
+            top_k = st.number_input("Top-k passages", 1, 10, int(settings.top_k), 1)
+            threshold = st.slider(
+                "Minimum relevance score", 0.0, 1.0, float(settings.min_relevance), 0.01,
+                help="Increase to reject weak matches; decrease if relevant answers are being missed.",
+            )
+        st.divider()
+        st.subheader("2. Answer generation")
+        c3, c4 = st.columns(2)
+        with c3:
+            provider_options = ["none", "openai_compatible"]
+            provider = st.selectbox(
+                "LLM provider", provider_options,
+                index=provider_options.index(settings.llm_provider)
+                if settings.llm_provider in provider_options else 0,
+                format_func=lambda value: "Extractive (no API)" if value == "none" else "OpenAI-compatible (Groq, etc.)",
+            )
+            model = st.text_input("LLM model", value=settings.llm_model)
+        with c4:
+            base_url = st.text_input("LLM base URL", value=settings.llm_base_url)
+            st.caption("API key: " + ("Found in environment (.env); value hidden." if settings.has_api_key else "Not found. Add LLM_API_KEY to .env."))
+
+        apply = st.form_submit_button("Apply settings", type="primary", use_container_width=True)
+    if apply:
+        if int(chunk_overlap) >= int(chunk_size):
+            st.error("Chunk overlap must be smaller than chunk size. Update the values and try again.")
+        elif not embedding_model.strip():
+            st.error("Embedding model cannot be empty.")
+        elif provider == "openai_compatible" and not base_url.strip():
+            st.error("LLM base URL cannot be empty.")
         else:
-            st.sidebar.warning("No LLM_API_KEY found. Add it to your .env file and restart.")
+            st.session_state["kp_settings_overrides"] = {
+                "embedding_backend": backend,
+                "embedding_model": embedding_model.strip(),
+                "chunk_size": int(chunk_size),
+                "chunk_overlap": int(chunk_overlap),
+                "top_k": int(top_k),
+                "min_relevance": float(threshold),
+                "llm_provider": provider,
+                "llm_model": model.strip() or settings.llm_model,
+                "llm_base_url": base_url.strip() or settings.llm_base_url,
+            }
+            st.session_state["kp_settings_saved_notice"] = True
+            st.rerun()
 
-    settings = base.with_overrides(
-        embedding_backend=backend,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        top_k=top_k,
-        min_relevance=min_relevance,
-        llm_provider=provider,
-        llm_model=model.strip() or base.llm_model,
-        llm_base_url=base_url.strip() or base.llm_base_url,
-    )
-    return settings
-
+    if st.session_state.pop("kp_settings_saved_notice", False):
+        st.success("Settings applied to this session. Chunking changes affect newly indexed PDFs; re-index existing PDFs when required.")
+    with st.expander("Troubleshooting and safe defaults"):
+        st.markdown("""
+- **Scanned PDF:** the document needs OCR before its text can be searched.
+- **No answer found:** check the selected document, question wording, relevance threshold, and top-k.
+- **Embedding model download fails:** check internet access or switch to hashing for a lightweight test.
+- **Groq/API errors:** verify the private .env values and provider limits. A key being present does not prove the connection is valid.
+- **Changed chunk size or overlap:** re-upload/re-index documents to apply the new chunking.
+- **Privacy:** never share or commit .env, API keys, or private PDFs.
+""")
 
 # -------------------------------------------------------------------- documents
-def render_documents_tab(settings, store: VectorStore, embedder) -> None:
-    st.subheader("1. Upload and index PDFs")
-    st.caption(
-        "Text is extracted page by page. Page numbers shown in citations are the physical page "
-        "positions in the PDF file (page 1 = first page, including any cover page). Printed page "
-        "numbers in the document may differ."
-    )
-    uploads = st.file_uploader("Choose one or more PDF files", type=["pdf"], accept_multiple_files=True)
+def pdf_source_path(settings, doc_id: str) -> Path:
+    """Local path for the original PDF; doc IDs are content hashes."""
+    return Path(settings.data_dir) / "documents" / f"{doc_id}.pdf"
 
-    if st.button("Index uploaded PDFs", disabled=not uploads, type="primary"):
-        reports = []
-        progress = st.progress(0.0, text="Starting...")
-        for number, upload in enumerate(uploads, start=1):
-            progress.progress((number - 1) / len(uploads), text=f"Indexing {upload.name}...")
-            reports.append(
-                ingest_pdf(
-                    upload.getvalue(),
-                    upload.name,
-                    store,
-                    embedder,
-                    settings.chunk_size,
-                    settings.chunk_overlap,
-                )
+
+def persist_pdf_source(settings, doc_id: str, data: bytes) -> None:
+    target = pdf_source_path(settings, doc_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_bytes(data)
+
+
+def _delete_pdf_source(settings, doc_id: str) -> None:
+    source = pdf_source_path(settings, doc_id)
+    try:
+        source.unlink(missing_ok=True)
+    except OSError:
+        logger.exception("Could not remove original PDF for document %s", doc_id)
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _render_pdf_page(path: str, page_number: int, zoom: float = 1.15) -> bytes:
+    """Render a locally stored PDF page as an image for Streamlit's viewer pane."""
+    pdf = pymupdf.open(path)
+    try:
+        if page_number < 1 or page_number > pdf.page_count:
+            raise ValueError("Page number is outside the PDF.")
+        page = pdf.load_page(page_number - 1)
+        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+        return pixmap.tobytes("png")
+    finally:
+        pdf.close()
+
+
+def _jump_to_source(doc_id: str, page: int, doc_label: str) -> None:
+    """Callback so clicking a citation focuses the corresponding document page."""
+    st.session_state["kp_selected_doc"] = doc_label
+    st.session_state[f"kp_preview_page_{doc_id}"] = int(page)
+
+
+def render_pdf_preview(settings, doc: dict | None) -> None:
+    """Show a page-image preview, with a clear message for older indexed PDFs."""
+    if doc is None:
+        st.markdown('<div class="kp-blank">📄<br><br><b>Select a document</b><br>Choose one PDF to preview pages and inspect citations.</div>', unsafe_allow_html=True)
+        return
+
+    source = pdf_source_path(settings, doc["doc_id"])
+    st.markdown(f"**{doc['filename']}**")
+    st.caption(f"{doc['pages']} searchable page(s) · {doc['chunks']} chunks")
+    if not source.exists():
+        st.info("This PDF was indexed before document preview was enabled. Re-upload it in Documents to enable page previews.")
+        return
+
+    try:
+        with pymupdf.open(str(source)) as pdf:
+            page_count = pdf.page_count
+        page_key = f"kp_preview_page_{doc['doc_id']}"
+        if page_key not in st.session_state:
+            st.session_state[page_key] = 1
+        current_page = int(st.session_state[page_key])
+        if current_page > page_count:
+            st.session_state[page_key] = page_count
+        toolbar_left, toolbar_right = st.columns([1.15, 1])
+        with toolbar_left:
+            st.number_input(
+                "PDF page", min_value=1, max_value=max(1, page_count), step=1,
+                key=page_key, label_visibility="collapsed",
             )
-        progress.progress(1.0, text="Done")
-        for rep in reports:
-            if rep.status == "indexed":
-                st.success(f"{rep.filename}: {rep.message}")
-            elif rep.status == "duplicate":
-                st.info(f"{rep.filename}: {rep.message}")
-            else:
-                st.error(f"{rep.filename}: {rep.message}")
-            for warning in rep.warnings:
-                st.warning(f"{rep.filename}: {warning}")
+        with toolbar_right:
+            st.caption(f"of {page_count} page(s)")
+        page_number = int(st.session_state[page_key])
+        page_png = _render_pdf_page(str(source), page_number)
+        st.image(page_png, width="stretch")
+        st.caption(f"PDF page {page_number} · Physical page numbering")
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.exception("PDF preview failed for %s", doc["filename"])
+        st.warning(f"Could not preview this PDF page. Try re-uploading the PDF. ({type(exc).__name__})")
 
-    st.subheader("2. Indexed documents")
+
+def render_documents_tab(settings, store: VectorStore, embedder) -> None:
+    st.markdown('<div class="kp-eyebrow">KNOWLEDGE BASE</div>', unsafe_allow_html=True)
+    st.title("Documents")
+    st.caption("Upload PDFs to build your private, searchable knowledge base.")
+    docs = store.list_documents()
+    a, b, c = st.columns(3)
+    a.metric("Indexed PDFs", len(docs))
+    b.metric("Searchable pages", sum(int(d["pages"]) for d in docs))
+    c.metric("Indexed chunks", sum(int(d["chunks"]) for d in docs))
+
+    with st.container(border=True):
+        st.subheader("Add documents")
+        st.caption("Text-based PDFs work best. Scanned/image-only PDFs need OCR before upload.")
+        uploads = st.file_uploader(
+            "Drop PDF files here or browse", type=["pdf"], accept_multiple_files=True,
+            help="Multiple PDF files can be uploaded together.",
+        )
+        if st.button("Index uploaded PDFs", disabled=not uploads, type="primary", use_container_width=True):
+            reports = []
+            progress = st.progress(0.0, text="Preparing documents…")
+            for number, upload in enumerate(uploads, start=1):
+                progress.progress((number - 1) / len(uploads), text=f"Indexing {upload.name}…")
+                payload = upload.getvalue()
+                report = ingest_pdf(
+                    payload, upload.name, store, embedder, settings.chunk_size, settings.chunk_overlap
+                )
+                if report.status in {"indexed", "duplicate"} and report.doc_id:
+                    try:
+                        persist_pdf_source(settings, report.doc_id, payload)
+                    except OSError:
+                        logger.exception("Could not persist original PDF %s", upload.name)
+                        report.warnings.append("Indexed successfully, but local PDF preview could not be saved.")
+                reports.append(report)
+            progress.progress(1.0, text="Processing complete")
+            for report in reports:
+                if report.status == "indexed":
+                    st.success(f"✓ {report.filename} — {report.message}")
+                elif report.status == "duplicate":
+                    st.info(f"↻ {report.filename} — {report.message}")
+                else:
+                    st.error(f"Could not index {report.filename}: {report.message}")
+                for warning in report.warnings:
+                    st.warning(f"{report.filename}: {warning}")
+            st.rerun()
+
+    st.subheader("Your indexed documents")
     docs = store.list_documents()
     if not docs:
-        st.info("No documents indexed yet. Upload a PDF above to get started.")
+        st.markdown(
+            '<div class="kp-blank">📂<br><br><b>Your knowledge base is empty</b><br>'
+            'Upload your first PDF above. Once indexing finishes, open AI Chat to ask questions.</div>',
+            unsafe_allow_html=True,
+        )
         return
-    for doc in docs:
-        cols = st.columns([5, 1, 1, 1])
-        cols[0].write(f"**{doc['filename']}**  \n`id: {doc['doc_id']}`")
-        cols[1].metric("Pages", doc["pages"])
-        cols[2].metric("Chunks", doc["chunks"])
-        if cols[3].button("Remove", key=f"del_{doc['doc_id']}"):
-            store.delete_document(doc["doc_id"])
-            st.rerun()
+
+    filter_text = st.text_input("Search documents", placeholder="Search by file name…", key="kp_doc_search")
+    shown_docs = [d for d in docs if filter_text.strip().lower() in d["filename"].lower()]
+    for doc in shown_docs:
+        with st.container(border=True):
+            left, pages, chunks, action = st.columns([5, 1, 1, 1.2], vertical_alignment="center")
+            with left:
+                st.markdown(f"**📄 {doc['filename']}**")
+                st.caption(f"ID · {doc['doc_id'][:10]}…")
+            pages.metric("Pages", doc["pages"])
+            chunks.metric("Chunks", doc["chunks"])
+            with action:
+                if st.button("Delete", key=f"request_delete_{doc['doc_id']}"):
+                    st.session_state["kp_pending_delete"] = doc["doc_id"]
+                    st.rerun()
+            if st.session_state.get("kp_pending_delete") == doc["doc_id"]:
+                st.warning(f"Remove **{doc['filename']}** and its indexed passages? This cannot be undone.")
+                confirm, cancel = st.columns(2)
+                with confirm:
+                    if st.button("Confirm delete", key=f"confirm_delete_{doc['doc_id']}", type="primary"):
+                        store.delete_document(doc["doc_id"])
+                        _delete_pdf_source(settings, doc["doc_id"])
+                        st.session_state.pop("kp_pending_delete", None)
+                        st.session_state.pop(f"kp_preview_page_{doc['doc_id']}", None)
+                        if st.session_state.get("kp_selected_doc", "").endswith(doc["doc_id"][:6]):
+                            st.session_state["kp_selected_doc"] = "All indexed PDFs"
+                        st.success(f"Removed {doc['filename']}.")
+                        st.rerun()
+                with cancel:
+                    if st.button("Cancel", key=f"cancel_delete_{doc['doc_id']}"):
+                        st.session_state.pop("kp_pending_delete", None)
+                        st.rerun()
+    if not shown_docs:
+        st.info("No documents match that search. Try a shorter filename fragment.")
 
 
 # ------------------------------------------------------------------------- chat
