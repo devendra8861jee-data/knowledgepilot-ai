@@ -144,6 +144,10 @@ def render_settings_page(base) -> None:
 
     with st.form("kp_settings_form", border=True):
         st.subheader("1. Document understanding")
+        st.info(
+            "Changing the embedding backend or model opens a separate vector index. "
+            "Your existing index is preserved, but you must re-index PDFs in the newly selected index."
+        )
         c1, c2 = st.columns(2)
         with c1:
             backend_options = list(SUPPORTED_EMBEDDING_BACKENDS)
@@ -823,11 +827,46 @@ def render_dashboard(settings, store: VectorStore) -> None:
         unsafe_allow_html=True,
     )
 
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Indexed PDFs", len(docs))
-    metric_cols[1].metric("Searchable pages", total_pages)
-    metric_cols[2].metric("Indexed chunks", total_chunks)
-    metric_cols[3].metric("Questions this session", questions_this_session)
+    assistant_results = [
+        message["result"]
+        for session in sessions
+        for message in session.get("messages", [])
+        if message.get("role") == "assistant" and "result" in message
+    ]
+    successful_answers = sum(
+        1 for result in assistant_results
+        if result.sufficient_evidence and not result.error and result.mode in {"llm", "extractive"}
+    )
+    avg_response = (
+        sum(result.total_latency_s for result in assistant_results) / len(assistant_results)
+        if assistant_results else None
+    )
+    measured_prompt_tokens = [
+        result.prompt_tokens for result in assistant_results if result.prompt_tokens is not None
+    ]
+    measured_output_tokens = [
+        result.completion_tokens for result in assistant_results if result.completion_tokens is not None
+    ]
+    total_output_tokens = sum(measured_output_tokens) if measured_output_tokens else None
+    if (
+        (settings.price_input_per_m > 0 or settings.price_output_per_m > 0)
+        and measured_prompt_tokens and measured_output_tokens
+    ):
+        estimated_cost = (
+            sum(measured_prompt_tokens) / 1_000_000 * settings.price_input_per_m
+            + sum(measured_output_tokens) / 1_000_000 * settings.price_output_per_m
+        )
+        cost_label = f"USD {estimated_cost:.4f}"
+    else:
+        cost_label = "n/a"
+
+    metric_cols = st.columns(6, gap="small")
+    metric_cols[0].metric("Total documents", len(docs))
+    metric_cols[1].metric("Indexed chunks", total_chunks)
+    metric_cols[2].metric("Successful answers", successful_answers, help="Current Streamlit browser session only.")
+    metric_cols[3].metric("Avg. response time", f"{avg_response:.2f}s" if avg_response is not None else "n/a")
+    metric_cols[4].metric("Output tokens", f"{total_output_tokens:,}" if total_output_tokens is not None else "n/a")
+    metric_cols[5].metric("Estimated cost", cost_label, help="Calculated only when token usage and token pricing are configured.")
 
     pipeline_col, retrieval_col = st.columns([1.05, 1], gap="medium")
     with pipeline_col:
