@@ -1,0 +1,4 @@
+# Optional dependencies for the React UI API (keep requirements.txt for Streamlit).
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+python-multipart>=0.0.9
