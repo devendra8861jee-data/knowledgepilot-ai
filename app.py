@@ -23,7 +23,38 @@ from src.vector_store import VectorStore, VectorStoreError
 configure_logging()
 logger = logging.getLogger("knowledgepilot.app")
 
-st.set_page_config(page_title="KnowledgePilot AI", page_icon=None, layout="wide")
+st.set_page_config(page_title="KnowledgePilot AI", page_icon="📚", layout="wide", initial_sidebar_state="expanded")
+
+# Lightweight responsive styling; the app remains native Streamlit.
+st.markdown("""
+<style>
+  :root { --kp-ink: #172033; --kp-muted: #667085; --kp-line: #e6eaf0; --kp-accent: #4f46e5; }
+  .stApp { background: linear-gradient(180deg, #f8faff 0%, #f7f8fc 240px, #ffffff 100%); color: var(--kp-ink); }
+  [data-testid="stSidebar"] { background: #111827; border-right: 1px solid #263246; }
+  [data-testid="stSidebar"] * { color: #f3f4f6; }
+  [data-testid="stSidebar"] [data-baseweb="select"] * { color: #111827; }
+  [data-testid="stSidebar"] input { color: #111827 !important; }
+  h1 { letter-spacing: -0.035em; font-weight: 760 !important; }
+  h2, h3 { letter-spacing: -0.02em; }
+  [data-testid="stMetric"] { background: #fff; border: 1px solid var(--kp-line); border-radius: 16px; padding: 16px 18px; box-shadow: 0 4px 18px rgba(15,23,42,.035); }
+  [data-testid="stMetricLabel"] { color: var(--kp-muted); }
+  [data-testid="stMetricValue"] { color: var(--kp-ink); }
+  [data-testid="stTabs"] button { border-radius: 10px 10px 0 0; font-weight: 650; }
+  [data-testid="stChatMessage"] { border: 1px solid var(--kp-line); border-radius: 16px; padding: 14px; background: rgba(255,255,255,.86); }
+  [data-testid="stFileUploader"] { border: 1.5px dashed #a5b4fc; border-radius: 16px; padding: 10px; background: #fafaff; }
+  div.stButton > button[kind="primary"], div.stDownloadButton > button { border-radius: 10px; font-weight: 650; }
+  [data-testid="stExpander"] { border: 1px solid var(--kp-line); border-radius: 12px; background: rgba(255,255,255,.78); }
+  .kp-eyebrow { color: #4f46e5; font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; }
+  .kp-hero { padding: 1.15rem 1.3rem; border-radius: 18px; border: 1px solid #e0e7ff; background: linear-gradient(120deg,#eef2ff,#ffffff 70%); margin: .4rem 0 1.2rem 0; }
+  .kp-muted { color: #667085; font-size: .92rem; }
+  @media (max-width: 700px) {
+    .block-container { padding: 1rem .8rem 2rem .8rem; }
+    h1 { font-size: 1.8rem !important; }
+    [data-testid="stMetric"] { padding: 11px; }
+    [data-testid="stSidebar"] { min-width: 0; }
+  }
+</style>
+""", unsafe_allow_html=True)
 
 EVAL_RESULTS_PATH = Path(__file__).resolve().parent / "evaluation" / "results" / "latest.json"
 
@@ -45,7 +76,10 @@ def load_store(persist_dir: str, embedder_name: str) -> VectorStore:
 def render_sidebar():
     """Show configuration widgets and return the effective settings."""
     base = load_settings()
-    st.sidebar.header("Settings")
+    st.sidebar.markdown("## 📚 KnowledgePilot")
+    st.sidebar.caption("Your private PDF research workspace")
+    st.sidebar.divider()
+    st.sidebar.header("⚙️ Settings")
 
     st.sidebar.subheader("Embeddings")
     backends = list(SUPPORTED_EMBEDDING_BACKENDS)
@@ -216,7 +250,25 @@ def render_chat_tab(settings, store: VectorStore, embedder) -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    if st.session_state.messages and st.button("Clear chat"):
+    if st.session_state.messages:
+        export_lines = []
+        for item in st.session_state.messages:
+            if item["role"] == "user":
+                export_lines.extend([f"## You\\n\\n{item['content']}", ""])
+            else:
+                export_lines.extend([f"## KnowledgePilot AI\\n\\n{item['result'].answer or item['result'].error or ''}", ""])
+                for citation in item["result"].citations:
+                    export_lines.append(f"- Source: {format_citation_label(citation)} (page {citation.page})")
+                export_lines.append("")
+        st.download_button(
+            "⬇️ Export chat",
+            "\\n".join(export_lines),
+            file_name="knowledgepilot-chat.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+    if st.session_state.messages and st.button("🧹 Clear chat"):
         st.session_state.messages = []
         st.rerun()
 
@@ -274,6 +326,51 @@ def render_report(report: dict) -> None:
     cols[2].metric(f"Precision@{k}", _pct(gt.get(f"precision@{k}")))
     cols[3].metric("MRR", _pct(gt.get("mrr")))
     st.caption(gt["description"])
+    retrieval_chart = pd.DataFrame(
+        [
+            {"Metric": f"Recall@{k}", "Score": gt.get(f"recall@{k}")},
+            {"Metric": f"Hit rate@{k}", "Score": gt.get(f"hit_rate@{k}")},
+            {"Metric": f"Precision@{k}", "Score": gt.get(f"precision@{k}")},
+            {"Metric": "MRR", "Score": gt.get("mrr")},
+        ]
+    ).dropna()
+    if not retrieval_chart.empty:
+        st.markdown("##### Retrieval quality at a glance")
+        st.bar_chart(retrieval_chart, x="Metric", y="Score", y_min=0, y_max=1)
+
+    st.markdown("#### Latency and reliability")
+    ops_chart = pd.DataFrame(
+        [
+            {"Metric": "Mean latency (s)", "Value": ops_value}
+            for ops_value in [summary["operational_metrics"].get("mean_latency_s")]
+            if ops_value is not None
+        ]
+        + [
+            {"Metric": "P95 latency (s)", "Value": ops_value}
+            for ops_value in [summary["operational_metrics"].get("p95_latency_s")]
+            if ops_value is not None
+        ]
+    )
+    if not ops_chart.empty:
+        st.bar_chart(ops_chart, x="Metric", y="Value")
+
+    judged_for_chart = summary["llm_judged_metrics"]
+    judged_chart = pd.DataFrame(
+        [
+            {"Metric": label, "Score": judged_for_chart.get(key)}
+            for label, key in [
+                ("Faithfulness", "faithfulness"),
+                ("Answer relevance", "answer_relevance"),
+                ("Context relevance", "context_relevance"),
+            ]
+            if judged_for_chart.get(key) is not None
+        ]
+    )
+    if not judged_chart.empty:
+        st.markdown("##### LLM judge scores")
+        st.bar_chart(judged_chart, x="Metric", y="Score", y_min=0, y_max=1)
+    else:
+        st.info("Faithfulness and relevance charts will appear after an evaluation run with the LLM judge enabled.")
 
     st.markdown("#### Abstention behaviour and lexical proxy")
     ab, proxy = summary["abstention_behaviour"], summary["proxy_metrics"]
@@ -384,7 +481,45 @@ def main() -> None:
         st.error(str(exc))
         st.stop()
 
-    tab_docs, tab_chat, tab_eval, tab_help = st.tabs(["Documents", "Chat", "Evaluation", "Help"])
+    docs_now = store.list_documents()
+    total_pages = sum(int(d.get("pages", 0) or 0) for d in docs_now)
+    total_chunks = sum(int(d.get("chunks", 0) or 0) for d in docs_now)
+    dash, tab_docs, tab_chat, tab_eval, tab_help = st.tabs(
+        ["Overview", "📄 Documents", "💬 AI Chat", "📊 Evaluation", "❔ Help"]
+    )
+    with dash:
+        st.subheader("Workspace overview")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Indexed PDFs", len(docs_now), help="Unique PDF files in your local index")
+        m2.metric("Pages indexed", total_pages)
+        m3.metric("Searchable chunks", total_chunks)
+        m4.metric("Answer engine", "Groq / LLM" if settings.llm_provider != "none" and settings.has_api_key else "Extractive")
+        left, right = st.columns([1.3, 1])
+        with left:
+            st.markdown("#### Recent documents")
+            if docs_now:
+                st.dataframe(
+                    pd.DataFrame([
+                        {"Document": d["filename"], "Pages": d["pages"], "Chunks": d["chunks"]}
+                        for d in docs_now
+                    ]),
+                    hide_index=True,
+                    width="stretch",
+                )
+            else:
+                st.info("No PDFs indexed yet. Open Documents to upload your first file.")
+        with right:
+            st.markdown("#### System status")
+            st.success(f"Embedding backend: {settings.embedding_backend}")
+            if settings.llm_provider != "none" and settings.has_api_key:
+                st.success(f"LLM configured: {settings.llm_model}")
+            elif settings.llm_provider == "none":
+                st.info("LLM generation is off; extractive answers are available.")
+            else:
+                st.warning("LLM selected, but API key is missing. Add LLM_API_KEY to .env.")
+            st.caption("Your PDFs and vector index are stored locally according to DATA_DIR.")
+        st.markdown("#### Get started")
+        st.write("1. Upload PDFs in **Documents**.  2. Ask questions in **AI Chat**.  3. Check retrieval quality in **Evaluation**.")
     with tab_docs:
         render_documents_tab(settings, store, embedder)
     with tab_chat:
