@@ -344,6 +344,7 @@ def render_documents_tab(settings, store: VectorStore, embedder) -> None:
     st.subheader("Your indexed documents")
     docs = store.list_documents()
     if not docs:
+        st.info("No documents indexed yet. Upload a PDF above to get started.")
         st.markdown(
             '<div class="kp-blank">📂<br><br><b>Your knowledge base is empty</b><br>'
             'Upload your first PDF above. Once indexing finishes, open AI Chat to ask questions.</div>',
