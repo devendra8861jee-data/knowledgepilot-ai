@@ -254,15 +254,15 @@ def render_chat_tab(settings, store: VectorStore, embedder) -> None:
         export_lines = []
         for item in st.session_state.messages:
             if item["role"] == "user":
-                export_lines.extend([f"## You\\n\\n{item['content']}", ""])
+                export_lines.extend([f"## You\n\n{item['content']}", ""])
             else:
-                export_lines.extend([f"## KnowledgePilot AI\\n\\n{item['result'].answer or item['result'].error or ''}", ""])
+                export_lines.extend([f"## KnowledgePilot AI\n\n{item['result'].answer or item['result'].error or ''}", ""])
                 for citation in item["result"].citations:
                     export_lines.append(f"- Source: {format_citation_label(citation)} (page {citation.page})")
                 export_lines.append("")
         st.download_button(
             "⬇️ Export chat",
-            "\\n".join(export_lines),
+            "\n".join(export_lines),
             file_name="knowledgepilot-chat.md",
             mime="text/markdown",
             use_container_width=True,
@@ -336,7 +336,7 @@ def render_report(report: dict) -> None:
     ).dropna()
     if not retrieval_chart.empty:
         st.markdown("##### Retrieval quality at a glance")
-        st.bar_chart(retrieval_chart, x="Metric", y="Score", y_min=0, y_max=1)
+        st.bar_chart(retrieval_chart, x="Metric", y="Score")
 
     st.markdown("#### Latency and reliability")
     ops_chart = pd.DataFrame(
@@ -368,7 +368,7 @@ def render_report(report: dict) -> None:
     )
     if not judged_chart.empty:
         st.markdown("##### LLM judge scores")
-        st.bar_chart(judged_chart, x="Metric", y="Score", y_min=0, y_max=1)
+        st.bar_chart(judged_chart, x="Metric", y="Score")
     else:
         st.info("Faithfulness and relevance charts will appear after an evaluation run with the LLM judge enabled.")
 
@@ -469,8 +469,13 @@ def render_evaluation_tab(settings) -> None:
 
 # ------------------------------------------------------------------------- main
 def main() -> None:
+    st.markdown('<div class="kp-eyebrow">Private knowledge workspace</div>', unsafe_allow_html=True)
     st.title("KnowledgePilot AI")
-    st.caption("Ask questions about your PDFs and get answers with verifiable page citations.")
+    st.markdown(
+        '<div class="kp-hero"><strong>Turn your PDFs into answers.</strong><br>'
+        '<span class="kp-muted">Search your documents, ask questions in natural language, and verify every answer with source citations.</span></div>',
+        unsafe_allow_html=True,
+    )
 
     settings = render_sidebar()
 
